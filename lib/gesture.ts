@@ -110,3 +110,82 @@ export function getGestureConfidence(
   }
   return 0.1;
 }
+
+type MovementSample = {
+  x: number;
+  y: number;
+  timestamp: number;
+};
+
+export class MovementClassifier {
+  private wristHistory: MovementSample[] = [];
+  private readonly HISTORY_SIZE = 10;
+
+  classify(keypoints: { name: string; x: number; y: number; score: number }[]):
+    | "JUMP"
+    | "FLAP"
+    | "IDLE"
+    | "ERROR" {
+    const wrist =
+      keypoints.find((point) => point.name === "left_wrist") ??
+      keypoints.find((point) => point.name === "right_wrist");
+    if (!wrist) {
+      console.error("[Gesture] ❌ No wrist keypoint found");
+      return "ERROR";
+    }
+
+    if (wrist.score < 0.3) {
+      console.warn("[Gesture] ⚠️ Low wrist confidence:", wrist.score);
+      return "ERROR";
+    }
+
+    const timestamp = performance.now();
+    this.wristHistory.push({ x: wrist.x, y: wrist.y, timestamp });
+    if (this.wristHistory.length > this.HISTORY_SIZE) {
+      this.wristHistory.shift();
+    }
+
+    if (this.wristHistory.length < 3) {
+      console.log("[Gesture] ⏳ Collecting samples...");
+      return "IDLE";
+    }
+
+    const recent = this.wristHistory.slice(-3);
+    const velocityY =
+      (recent[2].y - recent[0].y) /
+      (recent[2].timestamp - recent[0].timestamp);
+    const velocityX =
+      (recent[2].x - recent[0].x) /
+      (recent[2].timestamp - recent[0].timestamp);
+
+    console.log(
+      "[Gesture] Velocity Y:",
+      velocityY.toFixed(2),
+      "X:",
+      velocityX.toFixed(2)
+    );
+
+    if (velocityY < -0.5) {
+      console.log("[Gesture] ✅ JUMP detected");
+      return "JUMP";
+    }
+
+    const varianceX = this.calculateVariance(
+      this.wristHistory.map((point) => point.x)
+    );
+    if (varianceX > 50 && Math.abs(velocityX) > 0.3) {
+      console.log("[Gesture] ✅ FLAP detected");
+      return "FLAP";
+    }
+
+    return "IDLE";
+  }
+
+  private calculateVariance(values: number[]): number {
+    const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
+    return (
+      values.reduce((sum, value) => sum + (value - mean) ** 2, 0) /
+      values.length
+    );
+  }
+}

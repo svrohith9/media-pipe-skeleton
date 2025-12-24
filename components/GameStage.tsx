@@ -10,9 +10,12 @@ import Hud from "../app/game/Hud";
 import PauseModal from "../app/game/PauseModal";
 import GameOverModal from "../app/game/GameOverModal";
 import ErrorToast from "./ErrorToast";
+import SkeletonOverlay from "./SkeletonOverlay";
+import DebugPanel from "./DebugPanel";
 import { usePose } from "../hooks/usePose";
 import { useGameLoop } from "../hooks/useGameLoop";
 import {
+  MovementClassifier,
   createGestureState,
   updateGesture,
   type GestureState,
@@ -76,6 +79,8 @@ export default function GameStage() {
   const setCalibrationStats = usePoseStore(
     (state) => state.setCalibrationStats
   );
+  const poseError = usePoseStore((state) => state.error);
+  const poseKeypoints = usePoseStore((state) => state.keypoints);
 
   const score = useGameStore((state) => state.score);
   const setScore = useGameStore((state) => state.setScore);
@@ -86,6 +91,8 @@ export default function GameStage() {
   const resetScore = useGameStore((state) => state.resetScore);
   const preferKeyboard = useGameStore((state) => state.preferKeyboard);
   const setPreferKeyboard = useGameStore((state) => state.setPreferKeyboard);
+  const setGameStatus = useGameStore((state) => state.setStatus);
+  const setGameFps = useGameStore((state) => state.setFps);
 
   const setLastGesture = useDiagnosticStore((state) => state.setLastGesture);
 
@@ -112,6 +119,7 @@ export default function GameStage() {
   const lastArrowRef = useRef<"up" | "down" | null>(null);
   const lastArrowTimeRef = useRef(0);
   const lastGestureRef = useRef<"jump" | "flap" | "idle">("idle");
+  const classifierRef = useRef(new MovementClassifier());
   const [gestureIndicator, setGestureIndicator] = useState<
     "jump" | "flap" | null
   >(null);
@@ -173,6 +181,13 @@ export default function GameStage() {
     wristFilteredNormalizedY > 0 &&
     wristFilteredNormalizedY <= thresholds.jumpThreshold + 0.05;
 
+  const preflightError =
+    poseError === "CAMERA_ACCESS_DENIED" ||
+    poseError === "OFFSCREEN_CANVAS_UNSUPPORTED" ||
+    poseError === "WEB_WORKER_BLOCKED"
+      ? poseError
+      : null;
+
   useEffect(() => {
     const stored = thresholds ?? loadThresholds();
     if (stored) {
@@ -196,9 +211,11 @@ export default function GameStage() {
   useEffect(() => {
     if (isCalibrating) {
       setToast("Calibrating...");
+      setGameStatus("CALIBRATING");
       return;
     }
     setToast("Ready!");
+    setGameStatus("RUNNING");
   }, [isCalibrating]);
 
   useEffect(() => {
@@ -224,6 +241,35 @@ export default function GameStage() {
       setToast("Camera unavailable. Keyboard controls enabled.");
     }
   }, [cameraStatus, setPreferKeyboard]);
+
+  useEffect(() => {
+    if (isGameOver) {
+      setGameStatus("GAME_OVER");
+    } else if (isPaused) {
+      setGameStatus("PAUSED");
+    }
+  }, [isGameOver, isPaused, setGameStatus]);
+
+  useEffect(() => {
+    setGameFps(fps);
+  }, [fps, setGameFps]);
+
+  useEffect(() => {
+    if (poseError === "CAMERA_ACCESS_DENIED") {
+      setGameStatus("POSE_LOST");
+    }
+  }, [poseError, setGameStatus]);
+
+  useEffect(() => {
+    if (poseKeypoints.length === 0) {
+      return;
+    }
+    const gesture = classifierRef.current.classify(poseKeypoints);
+    console.log("[Game] Gesture:", gesture);
+    if (gesture === "ERROR") {
+      setGameStatus("POSE_LOST");
+    }
+  }, [poseKeypoints, setGameStatus]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -437,6 +483,7 @@ export default function GameStage() {
             setIsPaused(true);
             setPauseReason("Camera lost");
             setToast("Camera lost");
+            setGameStatus("POSE_LOST");
             return;
           }
 
@@ -707,6 +754,9 @@ export default function GameStage() {
       >
         <ParallaxBg worldX={worldX} />
 
+        <SkeletonOverlay />
+        <DebugPanel />
+
         <div className="absolute inset-0">
           <div className="absolute bottom-10 left-0 right-0 h-px bg-gradient-to-r from-transparent via-cyan-400/40 to-transparent" />
         </div>
@@ -806,6 +856,39 @@ export default function GameStage() {
       </motion.div>
 
       <ErrorToast message={toast} />
+
+      {preflightError && (
+        <div className="fixed inset-0 z-[1100] flex items-center justify-center bg-slate-950/90 p-6 text-slate-200">
+          <div className="w-[min(520px,92vw)] rounded-2xl border border-slate-600/50 bg-glass p-6 text-sm">
+            <div className="text-xs uppercase tracking-[0.3em] text-slate-400">
+              Preflight Failed
+            </div>
+            <h2 className="mt-2 text-xl text-cyan-200">Diagnostics blocked</h2>
+            <p className="mt-2 text-slate-400">
+              Error: <span className="font-mono">{preflightError}</span>
+            </p>
+            <div className="mt-4 text-slate-300">
+              {preflightError === "CAMERA_ACCESS_DENIED" && (
+                <p>
+                  Allow camera access in Chrome site settings, then reload.
+                </p>
+              )}
+              {preflightError === "OFFSCREEN_CANVAS_UNSUPPORTED" && (
+                <p>
+                  Your browser does not support OffscreenCanvas. Use Chrome 113+
+                  or enable hardware acceleration.
+                </p>
+              )}
+              {preflightError === "WEB_WORKER_BLOCKED" && (
+                <p>
+                  Web Workers are blocked. Disable extensions or strict CSP, then
+                  reload.
+                </p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

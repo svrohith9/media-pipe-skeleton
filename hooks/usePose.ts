@@ -14,6 +14,7 @@ import { useDiagnosticStore } from "../store/diagnosticStore";
 import { useCamera } from "./useCamera";
 import { useMounted } from "./useMounted";
 import { usePoseDebugger } from "./usePoseDebugger";
+import { runPreflightCheck } from "../lib/diagnostics";
 
 type WorkerPoseMessage = {
   type: "POSES";
@@ -24,6 +25,10 @@ type WorkerPoseMessage = {
 type WorkerErrorMessage = {
   type: "ERROR";
   message: string;
+};
+
+type WorkerReadyMessage = {
+  type: "READY";
 };
 
 type UsePoseOptions = {
@@ -52,12 +57,15 @@ const DEBUG_MODE = process.env.NEXT_PUBLIC_DEBUG_MODE === "true";
 export function usePose(options: UsePoseOptions = {}): PoseResult {
   const { enabled = true, onError } = options;
   const isE2E = useMemo(() => process.env.NEXT_PUBLIC_E2E === "1", []);
-  const { status: cameraStatus, stream, getCameraStream } = useCamera();
+  const { status: cameraStatus, stream, getCameraStream, setExternalStream } =
+    useCamera();
   const mountedRef = useMounted();
 
   const setKeypoints = usePoseStore((state) => state.setKeypoints);
   const setPoseStale = usePoseStore((state) => state.setPoseStale);
+  const setPoseError = usePoseStore((state) => state.setError);
   const lastPoseTimestamp = usePoseStore((state) => state.lastPoseTimestamp);
+  const poseError = usePoseStore((state) => state.error);
   const setCameraStatus = useDiagnosticStore((state) => state.setCameraStatus);
   const setFpsDiagnostic = useDiagnosticStore((state) => state.setFps);
 
@@ -93,21 +101,47 @@ export function usePose(options: UsePoseOptions = {}): PoseResult {
   );
 
   useEffect(() => {
-    if (!enabled || isE2E) {
+    if (!enabled || isE2E || poseError) {
       return;
     }
 
-    void getCameraStream();
-  }, [enabled, getCameraStream, isE2E]);
+    const run = async () => {
+      try {
+        const result = await runPreflightCheck();
+        if (result.stream) {
+          setExternalStream(result.stream);
+          return;
+        }
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Preflight failed.";
+        reportError(message);
+        setPoseError(message);
+        return;
+      }
+
+      await getCameraStream();
+    };
+
+    void run();
+  }, [
+    enabled,
+    getCameraStream,
+    isE2E,
+    poseError,
+    reportError,
+    setExternalStream,
+    setPoseError,
+  ]);
 
   useEffect(() => {
-    if (!enabled || isE2E) {
+    if (!enabled || isE2E || poseError) {
       return;
     }
     if (cameraStatus === "idle" && !stream) {
       void getCameraStream();
     }
-  }, [cameraStatus, enabled, getCameraStream, isE2E, stream]);
+  }, [cameraStatus, enabled, getCameraStream, isE2E, poseError, stream]);
 
   useEffect(() => {
     if (!stream || !videoRef.current) {
@@ -143,7 +177,9 @@ export function usePose(options: UsePoseOptions = {}): PoseResult {
       workerStartRef.current = now;
 
       worker.onmessage = (
-        event: MessageEvent<WorkerPoseMessage | WorkerErrorMessage>
+        event: MessageEvent<
+          WorkerPoseMessage | WorkerErrorMessage | WorkerReadyMessage
+        >
       ) => {
         if (!mountedRef.current) {
           return;
@@ -161,19 +197,24 @@ export function usePose(options: UsePoseOptions = {}): PoseResult {
           setKeypoints(smoothed, event.data.timestamp);
           setLocalKeypoints(smoothed);
           setHasPose(smoothed.length > 0);
+        } else if (event.data.type === "READY") {
+          setIsModelReady(true);
         } else if (event.data.type === "ERROR") {
+          setPoseError(event.data.message);
           reportError(event.data.message);
         }
       };
 
       worker.onerror = (event) => {
         reportError(event.message);
+        setPoseError(event.message);
       };
 
       return worker;
     };
 
     const worker = createWorker();
+    worker.postMessage({ type: "INIT" });
 
     const watchdog = window.setInterval(() => {
       if (!workerRef.current || cameraStatus !== "ready") {
@@ -209,12 +250,14 @@ export function usePose(options: UsePoseOptions = {}): PoseResult {
     isE2E,
     isModelReady,
     mountedRef,
+    poseError,
     reportError,
     setKeypoints,
+    setPoseError,
   ]);
 
   useEffect(() => {
-    if (!enabled || isE2E) {
+    if (!enabled || isE2E || poseError) {
       return;
     }
 
@@ -278,7 +321,7 @@ export function usePose(options: UsePoseOptions = {}): PoseResult {
     return () => {
       cancelAnimationFrame(raf);
     };
-  }, [enabled, isE2E, reportError, setFpsDiagnostic]);
+  }, [enabled, isE2E, poseError, reportError, setFpsDiagnostic]);
 
   useEffect(() => {
     if (!enabled || !isE2E) {

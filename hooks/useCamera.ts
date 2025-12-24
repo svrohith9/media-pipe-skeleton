@@ -10,6 +10,17 @@ export function useCamera() {
   const [stream, setStream] = useState<MediaStream | null>(null);
   const mountedRef = useMounted();
 
+  const setExternalStream = useCallback(
+    (nextStream: MediaStream) => {
+      if (!mountedRef.current) {
+        return;
+      }
+      setStream(nextStream);
+      setStatus("ready");
+    },
+    [mountedRef]
+  );
+
   const getCameraStream = useCallback(async () => {
     if (!navigator.mediaDevices?.getUserMedia) {
       setStatus("denied");
@@ -62,5 +73,5 @@ export function useCamera() {
     };
   }, [stream]);
 
-  return { status, stream, getCameraStream };
+  return { status, stream, getCameraStream, setExternalStream };
 }

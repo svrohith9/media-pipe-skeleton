@@ -67,6 +67,28 @@ async function loadDetector(): Promise<poseDetection.PoseDetector> {
 
 ctx.onmessage = async (event: MessageEvent) => {
   const data = event.data as {
+    type: "INIT" | "FRAME";
+    bitmap?: ImageBitmap;
+    width?: number;
+    height?: number;
+    timestamp?: number;
+  };
+
+  if (data.type === "INIT") {
+    try {
+      console.log("[Worker] Initializing detector...");
+      await loadDetector();
+      ctx.postMessage({ type: "READY" });
+      console.log("[Worker] ✅ Detector initialized");
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Detector init failed.";
+      ctx.postMessage({ type: "ERROR", message });
+    }
+    return;
+  }
+
+  const frame = data as {
     type: "FRAME";
     bitmap?: ImageBitmap;
     width?: number;
@@ -74,12 +96,12 @@ ctx.onmessage = async (event: MessageEvent) => {
     timestamp?: number;
   };
 
-  if (data.type !== "FRAME") {
+  if (frame.type !== "FRAME") {
     return;
   }
 
   try {
-    if (!data.bitmap || !data.width || !data.height) {
+    if (!frame.bitmap || !frame.width || !frame.height) {
       return;
     }
 
@@ -88,8 +110,12 @@ ctx.onmessage = async (event: MessageEvent) => {
       return;
     }
 
-    if (!offscreen || offscreen.width !== data.width || offscreen.height !== data.height) {
-      offscreen = new OffscreenCanvas(data.width, data.height);
+    if (
+      !offscreen ||
+      offscreen.width !== frame.width ||
+      offscreen.height !== frame.height
+    ) {
+      offscreen = new OffscreenCanvas(frame.width, frame.height);
       offscreenContext = offscreen.getContext("2d", { willReadFrequently: true });
     }
 
@@ -98,8 +124,8 @@ ctx.onmessage = async (event: MessageEvent) => {
       return;
     }
 
-    offscreenContext.drawImage(data.bitmap, 0, 0, data.width, data.height);
-    data.bitmap.close();
+    offscreenContext.drawImage(frame.bitmap, 0, 0, frame.width, frame.height);
+    frame.bitmap.close();
 
     const activeDetector = await loadDetector();
     const input = offscreen as unknown as HTMLCanvasElement;
@@ -127,7 +153,7 @@ ctx.onmessage = async (event: MessageEvent) => {
     ctx.postMessage({
       type: "POSES",
       payload: ordered,
-      timestamp: data.timestamp ?? performance.now(),
+      timestamp: frame.timestamp ?? performance.now(),
       ready: isReady,
     });
   } catch (error) {
