@@ -9,17 +9,20 @@ import {
   smoothKeypoints,
 } from "../lib/pose";
 import { KalmanFilter1D } from "../lib/kalmanFilter1D";
-import { useGameStore } from "../store/gameStore";
+import { usePoseStore } from "../store/poseStore";
+import { useDiagnosticStore } from "../store/diagnosticStore";
+import { useCamera } from "./useCamera";
 import { useMounted } from "./useMounted";
+import { usePoseDebugger } from "./usePoseDebugger";
 
 type WorkerPoseMessage = {
-  type: "pose";
-  keypoints: PoseKeypoint[];
+  type: "POSES";
+  payload: PoseKeypoint[];
   timestamp: number;
 };
 
 type WorkerErrorMessage = {
-  type: "error";
+  type: "ERROR";
   message: string;
 };
 
@@ -35,45 +38,44 @@ type PoseResult = {
   wristScore: number;
   shoulderNormalizedY: number;
   isModelReady: boolean;
-  cameraStatus: "idle" | "ready" | "denied";
+  cameraStatus: "idle" | "ready" | "denied" | "loading";
   fps: number;
   wrist: PoseKeypoint | null;
   wristFiltered: { x: number; y: number } | null;
   wristFilteredNormalizedY: number;
   wristNormalizedY: number;
   videoRef: React.RefObject<HTMLVideoElement>;
-  overlayRef: React.RefObject<HTMLCanvasElement>;
-  resolution: { width: number; height: number };
 };
+
+const DEBUG_MODE = process.env.NEXT_PUBLIC_DEBUG_MODE === "true";
 
 export function usePose(options: UsePoseOptions = {}): PoseResult {
   const { enabled = true, onError } = options;
   const isE2E = useMemo(() => process.env.NEXT_PUBLIC_E2E === "1", []);
-  const setKeypoints = useGameStore((state) => state.setKeypoints);
+  const { status: cameraStatus, stream, getCameraStream } = useCamera();
+  const mountedRef = useMounted();
+
+  const setKeypoints = usePoseStore((state) => state.setKeypoints);
+  const setPoseStale = usePoseStore((state) => state.setPoseStale);
+  const lastPoseTimestamp = usePoseStore((state) => state.lastPoseTimestamp);
+  const setCameraStatus = useDiagnosticStore((state) => state.setCameraStatus);
+  const setFpsDiagnostic = useDiagnosticStore((state) => state.setFps);
+
   const [keypoints, setLocalKeypoints] = useState<PoseKeypoint[]>([]);
   const [hasPose, setHasPose] = useState(false);
   const [fps, setFps] = useState(0);
-  const [resolution, setResolution] = useState({ width: 640, height: 360 });
   const [isModelReady, setIsModelReady] = useState(false);
-  const [cameraStatus, setCameraStatus] = useState<
-    "idle" | "ready" | "denied"
-  >("idle");
 
   const videoRef = useRef<HTMLVideoElement>(null);
-  const overlayRef = useRef<HTMLCanvasElement>(null);
   const workerRef = useRef<Worker | null>(null);
-  const captureRef = useRef<HTMLCanvasElement | null>(null);
   const lastKeypointsRef = useRef<PoseKeypoint[] | null>(null);
   const lastSentRef = useRef(0);
-  const lastFpsUpdateRef = useRef(0);
   const frameCounterRef = useRef(0);
-  const lowResAppliedRef = useRef(false);
+  const lastFpsUpdateRef = useRef(0);
+  const inFlightRef = useRef(false);
   const lastErrorRef = useRef<string | null>(null);
   const kalmanXRef = useRef<KalmanFilter1D | null>(null);
   const kalmanYRef = useRef<KalmanFilter1D | null>(null);
-  const lastRenderRef = useRef(0);
-  const inFlightRef = useRef(false);
-  const mountedRef = useMounted();
 
   const reportError = useCallback(
     (message: string) => {
@@ -88,39 +90,53 @@ export function usePose(options: UsePoseOptions = {}): PoseResult {
   );
 
   useEffect(() => {
+    if (!enabled || isE2E) {
+      return;
+    }
+
+    void getCameraStream();
+  }, [enabled, getCameraStream, isE2E]);
+
+  useEffect(() => {
+    if (!stream || !videoRef.current) {
+      return;
+    }
+
+    videoRef.current.srcObject = stream;
+    void videoRef.current.play();
+  }, [stream]);
+
+  useEffect(() => {
     if (!enabled) {
       return;
     }
+    setCameraStatus(cameraStatus);
+  }, [cameraStatus, enabled, setCameraStatus]);
 
-    if (isE2E) {
+  useEffect(() => {
+    if (!enabled || isE2E) {
       return;
     }
 
-    const worker = new Worker(
-      new URL("../app/workers/pose.worker.ts", import.meta.url),
-      {
-        type: "module",
-      }
-    );
+    const worker = new Worker(new URL("../app/workers/pose.worker.ts", import.meta.url), {
+      type: "module",
+    });
     workerRef.current = worker;
 
     worker.onmessage = (event: MessageEvent<WorkerPoseMessage | WorkerErrorMessage>) => {
       if (!mountedRef.current) {
         return;
       }
-      if (event.data.type === "pose") {
+      if (event.data.type === "POSES") {
         if (!isModelReady) {
           setIsModelReady(true);
         }
-        const smoothed = smoothKeypoints(lastKeypointsRef.current, event.data.keypoints);
+        const smoothed = smoothKeypoints(lastKeypointsRef.current, event.data.payload);
         lastKeypointsRef.current = smoothed;
-        setKeypoints(smoothed);
-        if (event.data.timestamp - lastRenderRef.current > 66) {
-          lastRenderRef.current = event.data.timestamp;
-          setLocalKeypoints(smoothed);
-        }
+        setKeypoints(smoothed, event.data.timestamp);
+        setLocalKeypoints(smoothed);
         setHasPose(smoothed.some((point) => point.score > 0.05));
-      } else if (event.data.type === "error") {
+      } else if (event.data.type === "ERROR") {
         reportError(event.data.message);
       }
     };
@@ -135,126 +151,51 @@ export function usePose(options: UsePoseOptions = {}): PoseResult {
       worker.terminate();
       workerRef.current = null;
     };
-  }, [enabled, mountedRef, reportError, setKeypoints]);
+  }, [enabled, isE2E, isModelReady, mountedRef, reportError, setKeypoints]);
 
   useEffect(() => {
-    if (!enabled) {
-      return;
-    }
-
-    if (isE2E) {
-      return;
-    }
-
-    const init = async () => {
-      try {
-        if (!navigator.mediaDevices?.getUserMedia) {
-          setCameraStatus("denied");
-          reportError("Camera API not supported.");
-          return;
-        }
-
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            width: resolution.width,
-            height: resolution.height,
-          },
-          audio: false,
-        });
-
-        if (!mountedRef.current) {
-          return;
-        }
-
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-          await videoRef.current.play();
-          setCameraStatus("ready");
-        }
-      } catch (error) {
-        if (!mountedRef.current) {
-          return;
-        }
-        setCameraStatus("denied");
-        reportError("Camera permissions denied or unavailable.");
-      }
-    };
-
-    init();
-
-    return () => {
-      const stream = videoRef.current?.srcObject;
-      if (stream instanceof MediaStream) {
-        stream.getTracks().forEach((track) => track.stop());
-      }
-    };
-  }, [enabled, reportError, resolution.height, resolution.width]);
-
-  useEffect(() => {
-    if (!enabled) {
-      return;
-    }
-
-    if (isE2E) {
+    if (!enabled || isE2E) {
       return;
     }
 
     let raf = 0;
-
     const loop = (time: number) => {
       const worker = workerRef.current;
       const video = videoRef.current;
-      if (!worker || !video) {
+      if (!worker || !video || video.readyState < 2) {
         raf = requestAnimationFrame(loop);
         return;
       }
 
-      if (!captureRef.current) {
-        captureRef.current = document.createElement("canvas");
-      }
-
-      const canvas = captureRef.current;
-      canvas.width = resolution.width;
-      canvas.height = resolution.height;
-      const context = canvas.getContext("2d", { willReadFrequently: true });
-      if (!context) {
+      const videoWidth = video.videoWidth;
+      const videoHeight = video.videoHeight;
+      if (videoWidth === 0 || videoHeight === 0) {
         raf = requestAnimationFrame(loop);
         return;
       }
 
-      if (time - lastSentRef.current > 33 && video.readyState >= 2 && !inFlightRef.current) {
+      if (time - lastSentRef.current > 33 && !inFlightRef.current) {
         inFlightRef.current = true;
         lastSentRef.current = time;
-        if (typeof createImageBitmap === "function") {
-          createImageBitmap(video)
-            .then((bitmap) => {
-              worker.postMessage(
-                {
-                  type: "frame",
-                  bitmap,
-                  width: resolution.width,
-                  height: resolution.height,
-                },
-                [bitmap]
-              );
-            })
-            .catch((error) => {
-              reportError(error instanceof Error ? error.message : "Frame capture failed.");
-            })
-            .finally(() => {
-              inFlightRef.current = false;
-            });
-        } else {
-          context.drawImage(video, 0, 0, canvas.width, canvas.height);
-          const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
-          worker.postMessage({
-            type: "frame",
-            imageData,
-            width: resolution.width,
-            height: resolution.height,
+        createImageBitmap(video)
+          .then((bitmap) => {
+            worker.postMessage(
+              {
+                type: "FRAME",
+                bitmap,
+                width: videoWidth,
+                height: videoHeight,
+                timestamp: time,
+              },
+              [bitmap]
+            );
+          })
+          .catch((error) => {
+            reportError(error instanceof Error ? error.message : "Frame capture failed.");
+          })
+          .finally(() => {
+            inFlightRef.current = false;
           });
-          inFlightRef.current = false;
-        }
       }
 
       frameCounterRef.current += 1;
@@ -263,13 +204,9 @@ export function usePose(options: UsePoseOptions = {}): PoseResult {
           (frameCounterRef.current * 1000) / (time - lastFpsUpdateRef.current)
         );
         setFps(nextFps);
+        setFpsDiagnostic(nextFps);
         frameCounterRef.current = 0;
         lastFpsUpdateRef.current = time;
-
-        if (nextFps < 55 && !lowResAppliedRef.current) {
-          lowResAppliedRef.current = true;
-          setResolution({ width: 320, height: 180 });
-        }
       }
 
       raf = requestAnimationFrame(loop);
@@ -280,7 +217,7 @@ export function usePose(options: UsePoseOptions = {}): PoseResult {
     return () => {
       cancelAnimationFrame(raf);
     };
-  }, [enabled, resolution.height, resolution.width]);
+  }, [enabled, isE2E, reportError, setFpsDiagnostic]);
 
   useEffect(() => {
     if (!enabled || !isE2E) {
@@ -288,7 +225,7 @@ export function usePose(options: UsePoseOptions = {}): PoseResult {
     }
 
     window.__setMockPose = (nextKeypoints: PoseKeypoint[]) => {
-      setKeypoints(nextKeypoints);
+      setKeypoints(nextKeypoints, performance.now());
       setLocalKeypoints(nextKeypoints);
       setHasPose(nextKeypoints.some((point) => point.score > 0.05));
       setIsModelReady(true);
@@ -299,15 +236,33 @@ export function usePose(options: UsePoseOptions = {}): PoseResult {
     };
   }, [enabled, isE2E, setKeypoints]);
 
+  useEffect(() => {
+    if (!enabled) {
+      return;
+    }
+
+    const interval = window.setInterval(() => {
+      if (!lastPoseTimestamp) {
+        return;
+      }
+      const stale = performance.now() - lastPoseTimestamp > 1000;
+      setPoseStale(stale);
+    }, 500);
+
+    return () => window.clearInterval(interval);
+  }, [enabled, lastPoseTimestamp, setPoseStale]);
+
+  usePoseDebugger(keypoints, keypoints[0]?.y ?? 0, DEBUG_MODE);
+
   const wrist = getWristKeypoint(keypoints);
   const wristScore = wrist?.score ?? 0;
   const hasWrist = wristScore > 0.05;
   const shoulder = getShoulderKeypoint(keypoints);
   const wristNormalizedY = wrist
-    ? normalizeY(wrist.y, resolution.height)
+    ? normalizeY(wrist.y, videoRef.current?.videoHeight || 1)
     : 0;
   const shoulderNormalizedY = shoulder
-    ? normalizeY(shoulder.y, resolution.height)
+    ? normalizeY(shoulder.y, videoRef.current?.videoHeight || 1)
     : 0;
 
   useEffect(() => {
@@ -330,7 +285,6 @@ export function usePose(options: UsePoseOptions = {}): PoseResult {
         estimatedError: 1,
       });
     }
-
   }, [wrist]);
 
   const wristFiltered = wrist
@@ -339,8 +293,9 @@ export function usePose(options: UsePoseOptions = {}): PoseResult {
         y: kalmanYRef.current?.update(wrist.y) ?? wrist.y,
       }
     : null;
+
   const wristFilteredNormalizedY = wristFiltered
-    ? normalizeY(wristFiltered.y, resolution.height)
+    ? normalizeY(wristFiltered.y, videoRef.current?.videoHeight || 1)
     : 0;
 
   return {
@@ -357,8 +312,6 @@ export function usePose(options: UsePoseOptions = {}): PoseResult {
     wristFilteredNormalizedY,
     wristNormalizedY,
     videoRef,
-    overlayRef,
-    resolution,
   };
 }
 

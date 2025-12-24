@@ -1,7 +1,14 @@
 "use client";
 
-import GameStage from "./game/page";
+import DiagnosticHUD from "../components/DiagnosticHUD";
+import ErrorBoundary from "../components/ErrorBoundary";
+import GameStage from "../components/GameStage";
 
 export default function Home() {
-  return <GameStage />;
+  return (
+    <ErrorBoundary>
+      <GameStage />
+      <DiagnosticHUD />
+    </ErrorBoundary>
+  );
 }

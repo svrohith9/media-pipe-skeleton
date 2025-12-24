@@ -6,7 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import CalibrationRing from "../../components/CalibrationRing";
 import GlassCard from "../../components/GlassCard";
 import type { PoseThresholds } from "../../lib/gesture";
-import type { CalibrationStats } from "../../store/gameStore";
+import type { CalibrationStats } from "../../store/poseStore";
 
 const CAPTURE_FRAMES = 30;
 
@@ -172,38 +172,40 @@ export default function Calibration({
             className="object-cover opacity-20"
           />
           <div className="relative z-10">
-          <div className="text-xs uppercase tracking-[0.4em] text-slate-400">
-            Calibration
-          </div>
-          <h2 className="mt-3 text-2xl font-semibold text-cyan-200">
-            Hold arm LOW -&gt; HIGH
-          </h2>
-          <p className="mt-2 text-sm text-slate-400">
-            {phase === "done"
-              ? "Calibrated!"
-              : "Keep your wrist steady. We sample 30 frames for each pose."}
-          </p>
-          {!isModelReady && (
-            <p className="mt-3 text-xs text-slate-500">Loading pose model...</p>
-          )}
-          <div className="mt-6 flex flex-wrap items-center justify-center gap-8">
-            <CalibrationRing
-              label="Low"
-              progress={lowProgress}
-              active={phase === "low"}
-            />
-            <CalibrationRing
-              label="High"
-              progress={highProgress}
-              active={phase === "high"}
-            />
-          </div>
-          <button
-            onClick={onSkip}
-            className="mt-6 text-xs uppercase tracking-[0.3em] text-slate-400 hover:text-cyan-200"
-          >
-            Use defaults
-          </button>
+            <div className="text-xs uppercase tracking-[0.4em] text-slate-400">
+              Calibration
+            </div>
+            <h2 className="mt-3 text-2xl font-semibold text-cyan-200">
+              Hold arm LOW -&gt; HIGH
+            </h2>
+            <p className="mt-2 text-sm text-slate-400">
+              {phase === "done"
+                ? "Calibrated!"
+                : "Keep your wrist steady. We sample 30 frames for each pose."}
+            </p>
+            {!isModelReady && (
+              <p className="mt-3 text-xs text-slate-500">
+                Loading pose model...
+              </p>
+            )}
+            <div className="mt-6 flex flex-wrap items-center justify-center gap-8">
+              <CalibrationRing
+                label="Low"
+                progress={lowProgress}
+                active={phase === "low"}
+              />
+              <CalibrationRing
+                label="High"
+                progress={highProgress}
+                active={phase === "high"}
+              />
+            </div>
+            <button
+              onClick={onSkip}
+              className="mt-6 text-xs uppercase tracking-[0.3em] text-slate-400 hover:text-cyan-200"
+            >
+              Use defaults
+            </button>
           </div>
         </GlassCard>
       </motion.div>

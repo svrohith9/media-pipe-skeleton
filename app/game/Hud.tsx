@@ -1,95 +1,24 @@
 "use client";
 
-import { useEffect } from "react";
 import { useGameStore } from "../../store/gameStore";
-import type { PoseKeypoint } from "../../lib/pose";
-
-const SKELETON_EDGES: Array<[string, string]> = [
-  ["left_shoulder", "right_shoulder"],
-  ["left_shoulder", "left_elbow"],
-  ["left_elbow", "left_wrist"],
-  ["right_shoulder", "right_elbow"],
-  ["right_elbow", "right_wrist"],
-  ["left_shoulder", "left_hip"],
-  ["right_shoulder", "right_hip"],
-  ["left_hip", "right_hip"],
-  ["left_hip", "left_knee"],
-  ["left_knee", "left_ankle"],
-  ["right_hip", "right_knee"],
-  ["right_knee", "right_ankle"],
-];
 
 export type HudProps = {
   fps: number;
-  keypoints: PoseKeypoint[];
   preferKeyboard: boolean;
   onToggleControls: () => void;
   gestureIndicator: "jump" | "flap" | null;
   jumpReady: boolean;
-  overlayRef: React.RefObject<HTMLCanvasElement>;
-  videoRef: React.RefObject<HTMLVideoElement>;
 };
 
 export default function Hud({
   fps,
-  keypoints,
   preferKeyboard,
   onToggleControls,
   gestureIndicator,
   jumpReady,
-  overlayRef,
-  videoRef,
 }: HudProps) {
   const score = useGameStore((state) => state.score);
   const combo = useGameStore((state) => state.combo);
-
-  useEffect(() => {
-    const canvas = overlayRef.current;
-    if (!canvas) {
-      return;
-    }
-
-    const context = canvas.getContext("2d");
-    if (!context) {
-      return;
-    }
-
-    const draw = () => {
-      context.clearRect(0, 0, canvas.width, canvas.height);
-      const rawVideoWidth = videoRef.current?.videoWidth ?? 0;
-      const rawVideoHeight = videoRef.current?.videoHeight ?? 0;
-      const videoWidth = rawVideoWidth > 0 ? rawVideoWidth : canvas.width;
-      const videoHeight = rawVideoHeight > 0 ? rawVideoHeight : canvas.height;
-      const scaleX = canvas.width / videoWidth;
-      const scaleY = canvas.height / videoHeight;
-      const lookup = new Map(keypoints.map((point) => [point.name, point]));
-
-      for (const [from, to] of SKELETON_EDGES) {
-        const start = lookup.get(from);
-        const end = lookup.get(to);
-        if (!start || !end) {
-          continue;
-        }
-
-        const confidence = Math.min(start.score, end.score);
-        context.strokeStyle = `hsl(${confidence * 120}, 100%, 60%)`;
-        context.lineWidth = 2;
-        context.beginPath();
-        context.moveTo(start.x * scaleX, start.y * scaleY);
-        context.lineTo(end.x * scaleX, end.y * scaleY);
-        context.stroke();
-      }
-
-      for (const point of keypoints) {
-        context.fillStyle = `hsl(${point.score * 120}, 100%, 60%)`;
-        context.beginPath();
-        context.arc(point.x * scaleX, point.y * scaleY, 3, 0, Math.PI * 2);
-        context.fill();
-      }
-    };
-
-    draw();
-  }, [keypoints, overlayRef, videoRef]);
 
   return (
     <div className="absolute inset-x-0 top-0 flex items-start justify-between p-6">

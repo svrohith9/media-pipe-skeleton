@@ -92,3 +92,21 @@ export function updateGesture(
 
   return { state: nextState, gesture };
 }
+
+export function getGestureConfidence(
+  gesture: Gesture,
+  velocityX: number,
+  wristY: number,
+  thresholds: PoseThresholds | null
+): number {
+  if (!thresholds) {
+    return 0.2;
+  }
+  if (gesture === "jump") {
+    return Math.min(1, Math.max(0, (thresholds.jumpThreshold - wristY + 0.1) * 4));
+  }
+  if (gesture === "flap") {
+    return Math.min(1, Math.max(0, (Math.abs(velocityX) - 200) / 300));
+  }
+  return 0.1;
+}

@@ -35,6 +35,23 @@ test("calibration, jumps, pause, resume", async ({ page }) => {
   await expect(page.getByText("Calibrated!")).toBeVisible();
   await page.waitForTimeout(600);
 
+  const debugCanvas = page.getByTestId("skeleton-debug");
+  await expect(debugCanvas).toBeVisible();
+  const hasInk = await debugCanvas.evaluate((canvas) => {
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      return false;
+    }
+    const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+    for (let i = 3; i < data.length; i += 4) {
+      if (data[i] > 0) {
+        return true;
+      }
+    }
+    return false;
+  });
+  expect(hasInk).toBe(true);
+
   await pumpFrames(page, 120);
   await page.waitForTimeout(120);
   await pumpFrames(page, 120, 360);

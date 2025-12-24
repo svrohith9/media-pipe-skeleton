@@ -67,59 +67,59 @@ async function loadDetector(): Promise<poseDetection.PoseDetector> {
 
 ctx.onmessage = async (event: MessageEvent) => {
   const data = event.data as {
-    type: string;
-    imageData?: ImageData;
+    type: "FRAME";
     bitmap?: ImageBitmap;
     width?: number;
     height?: number;
+    timestamp?: number;
   };
 
-  if (data.type !== "frame") {
+  if (data.type !== "FRAME") {
     return;
   }
 
   try {
-    let imageData = data.imageData;
-    if (!imageData && data.bitmap && data.width && data.height) {
-      if (typeof OffscreenCanvas === "undefined") {
-        data.bitmap.close();
-        return;
-      }
-      if (!offscreen || offscreen.width !== data.width || offscreen.height !== data.height) {
-        offscreen = new OffscreenCanvas(data.width, data.height);
-        offscreenContext = offscreen.getContext("2d", { willReadFrequently: true });
-      }
-      if (!offscreenContext) {
-        return;
-      }
-      offscreenContext.drawImage(data.bitmap, 0, 0, data.width, data.height);
-      data.bitmap.close();
-      imageData = offscreenContext.getImageData(0, 0, data.width, data.height);
-    }
-
-    if (!imageData) {
+    if (!data.bitmap || !data.width || !data.height) {
       return;
     }
 
+    if (typeof OffscreenCanvas === "undefined") {
+      data.bitmap.close();
+      return;
+    }
+
+    if (!offscreen || offscreen.width !== data.width || offscreen.height !== data.height) {
+      offscreen = new OffscreenCanvas(data.width, data.height);
+      offscreenContext = offscreen.getContext("2d", { willReadFrequently: true });
+    }
+
+    if (!offscreenContext) {
+      data.bitmap.close();
+      return;
+    }
+
+    offscreenContext.drawImage(data.bitmap, 0, 0, data.width, data.height);
+    data.bitmap.close();
+
     const activeDetector = await loadDetector();
-    const poses = await activeDetector.estimatePoses(imageData, {
+    const poses = await activeDetector.estimatePoses(offscreen, {
       flipHorizontal: true,
     });
     const keypoints = poses[0]?.keypoints ?? [];
 
     ctx.postMessage({
-      type: "pose",
-      keypoints: keypoints.map((point, index) => ({
+      type: "POSES",
+      payload: keypoints.map((point, index) => ({
         name: point.name ?? KEYPOINT_NAMES[index] ?? "",
         x: point.x,
         y: point.y,
         score: point.score ?? 0,
       })),
-      timestamp: performance.now(),
+      timestamp: data.timestamp ?? performance.now(),
       ready: isReady,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Pose worker failed.";
-    ctx.postMessage({ type: "error", message });
+    ctx.postMessage({ type: "ERROR", message });
   }
 };
