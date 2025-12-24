@@ -7,42 +7,88 @@ export type PoseThresholds = {
 
 export type GestureInput = {
   wristY: number;
-  wristVelocityX: number;
+  wristX: number;
   shoulderY: number;
-  thresholds: PoseThresholds;
+  thresholds: PoseThresholds | null;
   hasPose: boolean;
   hasWrist: boolean;
+  timestamp: number;
 };
 
-export function classifyGesture(input: GestureInput): Gesture {
+export type GestureState = {
+  mode: "idle" | "raising" | "jump" | "flapping";
+  lastTimestamp: number;
+  lastAboveIdleTime: number;
+  lastWristX: number;
+  lastVelocitySign: number;
+  flapCycles: number;
+  lastFlapTime: number;
+};
+
+export const createGestureState = (timestamp: number): GestureState => ({
+  mode: "idle",
+  lastTimestamp: timestamp,
+  lastAboveIdleTime: 0,
+  lastWristX: 0,
+  lastVelocitySign: 0,
+  flapCycles: 0,
+  lastFlapTime: 0,
+});
+
+export function updateGesture(
+  prev: GestureState,
+  input: GestureInput
+): { state: GestureState; gesture: Gesture } {
   if (!input.hasPose || !input.hasWrist) {
-    return "idle";
+    return { state: { ...prev, mode: "idle" }, gesture: "idle" };
   }
 
-  const idle = input.thresholds.idleThreshold;
-  const jump = Math.min(
-    input.thresholds.jumpThreshold,
-    input.thresholds.idleThreshold - 0.05
-  );
-  const hasThresholds = idle > 0 && jump > 0;
+  const dt = Math.max(0.001, (input.timestamp - prev.lastTimestamp) / 1000);
+  const velocityX = (input.wristX - prev.lastWristX) / dt;
+  const velocitySign = Math.sign(velocityX);
+  const idleThreshold = input.thresholds?.idleThreshold ?? input.shoulderY + 0.1;
+  const jumpThreshold =
+    input.thresholds?.jumpThreshold ?? input.shoulderY - 0.05;
 
-  if (hasThresholds) {
-    if (input.wristY <= jump) {
-      return "jump";
+  let nextState: GestureState = {
+    ...prev,
+    lastTimestamp: input.timestamp,
+    lastWristX: input.wristX,
+  };
+
+  let gesture: Gesture = "idle";
+
+  if (input.wristY > idleThreshold) {
+    nextState.lastAboveIdleTime = input.timestamp;
+  }
+
+  if (
+    input.wristY <= jumpThreshold &&
+    input.timestamp - nextState.lastAboveIdleTime < 300
+  ) {
+    nextState.mode = "jump";
+    gesture = "jump";
+    nextState.flapCycles = 0;
+  } else if (Math.abs(velocityX) > 200 && input.wristY >= idleThreshold) {
+    if (velocitySign !== 0 && velocitySign !== nextState.lastVelocitySign) {
+      nextState.flapCycles += 1;
+      nextState.lastVelocitySign = velocitySign;
+      nextState.lastFlapTime = input.timestamp;
     }
 
-    if (input.wristY >= idle && input.wristVelocityX > 200) {
-      return "flap";
-    }
-  } else if (input.shoulderY > 0) {
-    if (input.wristY <= input.shoulderY - 0.05) {
-      return "jump";
-    }
-
-    if (input.wristY >= input.shoulderY + 0.1 && input.wristVelocityX > 180) {
-      return "flap";
+    if (nextState.flapCycles >= 3) {
+      nextState.mode = "flapping";
+      gesture = "flap";
     }
   }
 
-  return "idle";
+  if (input.timestamp - nextState.lastFlapTime > 1000) {
+    nextState.flapCycles = 0;
+  }
+
+  if (gesture === "idle" && nextState.mode !== "idle") {
+    nextState.mode = "idle";
+  }
+
+  return { state: nextState, gesture };
 }

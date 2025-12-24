@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
-import { useGameStore } from "../../lib/store";
+import { useGameStore } from "../../store/gameStore";
 import type { PoseKeypoint } from "../../lib/pose";
 
 const SKELETON_EDGES: Array<[string, string]> = [
@@ -22,11 +22,24 @@ const SKELETON_EDGES: Array<[string, string]> = [
 export type HudProps = {
   fps: number;
   keypoints: PoseKeypoint[];
-  videoRef: React.RefObject<HTMLVideoElement>;
+  preferKeyboard: boolean;
+  onToggleControls: () => void;
+  gestureIndicator: "jump" | "flap" | null;
+  jumpReady: boolean;
   overlayRef: React.RefObject<HTMLCanvasElement>;
+  videoRef: React.RefObject<HTMLVideoElement>;
 };
 
-export default function Hud({ fps, keypoints, videoRef, overlayRef }: HudProps) {
+export default function Hud({
+  fps,
+  keypoints,
+  preferKeyboard,
+  onToggleControls,
+  gestureIndicator,
+  jumpReady,
+  overlayRef,
+  videoRef,
+}: HudProps) {
   const score = useGameStore((state) => state.score);
   const combo = useGameStore((state) => state.combo);
 
@@ -59,7 +72,7 @@ export default function Hud({ fps, keypoints, videoRef, overlayRef }: HudProps) 
         }
 
         const confidence = Math.min(start.score, end.score);
-        context.strokeStyle = `hsl(${confidence * 120}, 100%, 50%)`;
+        context.strokeStyle = `hsl(${confidence * 120}, 100%, 60%)`;
         context.lineWidth = 2;
         context.beginPath();
         context.moveTo(start.x * scaleX, start.y * scaleY);
@@ -68,7 +81,7 @@ export default function Hud({ fps, keypoints, videoRef, overlayRef }: HudProps) 
       }
 
       for (const point of keypoints) {
-        context.fillStyle = `hsl(${point.score * 120}, 100%, 50%)`;
+        context.fillStyle = `hsl(${point.score * 120}, 100%, 60%)`;
         context.beginPath();
         context.arc(point.x * scaleX, point.y * scaleY, 3, 0, Math.PI * 2);
         context.fill();
@@ -96,20 +109,25 @@ export default function Hud({ fps, keypoints, videoRef, overlayRef }: HudProps) 
           </div>
         </div>
 
-        <div className="relative">
-          <video
-            ref={videoRef}
-            className="h-[108px] w-[192px] rounded-lg border border-slate-600/50 object-cover opacity-90"
-            autoPlay
-            playsInline
-            muted
-          />
-          <canvas
-            ref={overlayRef}
-            width={192}
-            height={108}
-            className="pointer-events-none absolute inset-0 h-[108px] w-[192px] opacity-30"
-          />
+        <button
+          onClick={onToggleControls}
+          className="rounded-full border border-slate-600/50 px-4 py-2 text-xs uppercase tracking-[0.2em] text-slate-300 hover:text-cyan-200"
+        >
+          {preferKeyboard ? "Keyboard" : "Camera"}
+        </button>
+
+        <div className="flex items-center gap-3 rounded-full bg-glass px-4 py-2 text-xs text-slate-300">
+          <span className="text-cyan-300">Indicators</span>
+          <span
+            className={`text-lg ${gestureIndicator === "jump" || jumpReady ? "text-cyan-300 animate-pulse" : "text-slate-600"}`}
+          >
+            ↑
+          </span>
+          <span
+            className={`text-lg ${gestureIndicator === "flap" ? "text-fuchsia-400 animate-pulse" : "text-slate-600"}`}
+          >
+            〰
+          </span>
         </div>
       </div>
     </div>

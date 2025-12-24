@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { animate, motion, useMotionValue } from "framer-motion";
-import Calibration from "./Calibration";
+import Calibration, { type CalibrationResult } from "./Calibration";
 import Player from "./Player";
 import Obstacle from "./Obstacle";
 import ParallaxBg from "./ParallaxBg";
@@ -11,7 +11,11 @@ import PauseModal from "./PauseModal";
 import GameOverModal from "./GameOverModal";
 import { usePose } from "../../hooks/usePose";
 import { useGameLoop } from "../../hooks/useGameLoop";
-import { classifyGesture } from "../../lib/gesture";
+import {
+  createGestureState,
+  updateGesture,
+  type GestureState,
+} from "../../lib/gesture";
 import { aabbIntersect, integrateJump, type JumpState } from "../../lib/physics";
 import {
   clearThresholds,
@@ -20,7 +24,7 @@ import {
   saveHighScore,
   saveThresholds,
 } from "../../lib/storage";
-import { useGameStore } from "../../lib/store";
+import { useGameStore } from "../../store/gameStore";
 
 const PLAYER_X = 120;
 const PLAYER_SIZE = 56;
@@ -71,6 +75,11 @@ export default function GameStage() {
   const highScore = useGameStore((state) => state.highScore);
   const setHighScore = useGameStore((state) => state.setHighScore);
   const resetScore = useGameStore((state) => state.resetScore);
+  const preferKeyboard = useGameStore((state) => state.preferKeyboard);
+  const setPreferKeyboard = useGameStore((state) => state.setPreferKeyboard);
+  const setCalibrationStats = useGameStore(
+    (state) => state.setCalibrationStats
+  );
 
   const stageRef = useRef<HTMLDivElement>(null);
   const stageWidthRef = useRef(900);
@@ -89,6 +98,12 @@ export default function GameStage() {
   const shakeTimerRef = useRef(0);
   const spawnTimerRef = useRef(1.5);
   const hitLockRef = useRef(false);
+  const gestureStateRef = useRef<GestureState>(createGestureState(0));
+  const keyboardJumpRef = useRef(false);
+  const keyboardFlapRef = useRef(false);
+  const lastArrowRef = useRef<"up" | "down" | null>(null);
+  const lastArrowTimeRef = useRef(0);
+  const [gestureIndicator, setGestureIndicator] = useState<"jump" | "flap" | null>(null);
 
   const obstaclePool = useMemo<ObstacleItem[]>(() => {
     return Array.from({ length: 12 }).map((_, index) => ({
@@ -116,8 +131,9 @@ export default function GameStage() {
     }));
   }, []);
 
-  const [particles, setParticles] = useState<Particle[]>(particlePool);
   const particlesRef = useRef<Particle[]>(particlePool);
+  const particleCanvasRef = useRef<HTMLCanvasElement>(null);
+  const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
 
   const {
     keypoints,
@@ -125,16 +141,23 @@ export default function GameStage() {
     hasWrist,
     shoulderNormalizedY,
     isModelReady,
+    cameraStatus,
     fps,
-    wrist,
+    wristFiltered,
+    wristFilteredNormalizedY,
     wristNormalizedY,
-    wristVelocityX,
     videoRef,
     overlayRef,
   } = usePose({
     enabled: true,
     onError: (message) => setToast(message),
   });
+
+  const jumpReady =
+    !preferKeyboard &&
+    !!thresholds &&
+    wristFilteredNormalizedY > 0 &&
+    wristFilteredNormalizedY <= thresholds.jumpThreshold + 0.05;
 
   useEffect(() => {
     const stored = loadThresholds();
@@ -143,6 +166,22 @@ export default function GameStage() {
     const storedHigh = loadHighScore();
     setHighScore(storedHigh);
   }, [setHighScore, setThresholds]);
+
+  useEffect(() => {
+    const media = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const update = () => setPrefersReducedMotion(media.matches);
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
+
+  useEffect(() => {
+    if (isCalibrating) {
+      setToast("Calibrating...");
+      return;
+    }
+    setToast("Ready!");
+  }, [isCalibrating]);
 
   useEffect(() => {
     if (!toast) {
@@ -154,9 +193,72 @@ export default function GameStage() {
   }, [toast]);
 
   useEffect(() => {
+    if (!gestureIndicator) {
+      return;
+    }
+    const timeout = window.setTimeout(() => setGestureIndicator(null), 400);
+    return () => window.clearTimeout(timeout);
+  }, [gestureIndicator]);
+
+  useEffect(() => {
+    if (cameraStatus === "denied") {
+      setPreferKeyboard(true);
+      setToast("Camera unavailable. Keyboard controls enabled.");
+    }
+  }, [cameraStatus, setPreferKeyboard]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.code === "Space") {
+        keyboardJumpRef.current = true;
+      }
+      if (event.code === "ArrowUp") {
+        const now = performance.now();
+        if (
+          lastArrowRef.current === "down" &&
+          now - lastArrowTimeRef.current < 400
+        ) {
+          keyboardFlapRef.current = true;
+        }
+        lastArrowRef.current = "up";
+        lastArrowTimeRef.current = now;
+      }
+      if (event.code === "ArrowDown") {
+        const now = performance.now();
+        if (
+          lastArrowRef.current === "up" &&
+          now - lastArrowTimeRef.current < 400
+        ) {
+          keyboardFlapRef.current = true;
+        }
+        lastArrowRef.current = "down";
+        lastArrowTimeRef.current = now;
+      }
+    };
+
+    const onKeyUp = (event: KeyboardEvent) => {
+      if (event.code === "Space") {
+        keyboardJumpRef.current = false;
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+    };
+  }, []);
+
+  useEffect(() => {
     const resize = () => {
       if (stageRef.current) {
-        stageWidthRef.current = stageRef.current.getBoundingClientRect().width;
+        const rect = stageRef.current.getBoundingClientRect();
+        stageWidthRef.current = rect.width;
+        if (particleCanvasRef.current) {
+          particleCanvasRef.current.width = rect.width;
+          particleCanvasRef.current.height = rect.height;
+        }
       }
     };
 
@@ -178,9 +280,10 @@ export default function GameStage() {
 
   const emitParticles = useCallback((originX: number, originY: number, burst = 12) => {
     const pool = particlesRef.current;
+    const maxBurst = prefersReducedMotion ? Math.min(3, burst) : burst;
     let emitted = 0;
     for (const particle of pool) {
-      if (particle.life <= 0 && emitted < burst) {
+      if (particle.life <= 0 && emitted < maxBurst) {
         particle.x = originX;
         particle.y = originY;
         particle.vx = (Math.random() - 0.5) * 140;
@@ -189,8 +292,7 @@ export default function GameStage() {
         emitted += 1;
       }
     }
-    setParticles([...pool]);
-  }, []);
+  }, [prefersReducedMotion]);
 
   const spawnObstacle = useCallback(() => {
     const pool = obstaclesRef.current;
@@ -224,6 +326,7 @@ export default function GameStage() {
     jumpStreakRef.current = 0;
     slowMoUntilRef.current = 0;
     hitLockRef.current = false;
+    gestureStateRef.current = createGestureState(performance.now());
     resetScore();
     setDistance(0);
     setIsGameOver(false);
@@ -241,7 +344,6 @@ export default function GameStage() {
     for (const particle of particlePoolLocal) {
       particle.life = 0;
     }
-    setParticles([...particlePoolLocal]);
   }, [resetScore, worldX]);
 
   useGameLoop(
@@ -253,9 +355,10 @@ export default function GameStage() {
           }
 
           const lastPoseTime = lastPoseTimeRef.current;
-          if (!hasPose && time - lastPoseTime > 2000) {
+          if (!hasPose && time - lastPoseTime > 2000 && !preferKeyboard && cameraStatus !== "denied") {
             setIsPaused(true);
             setPauseReason("Camera lost");
+            setToast("Camera lost");
             return;
           }
 
@@ -266,30 +369,48 @@ export default function GameStage() {
           setDistance(Math.floor(worldX.get() / 80));
 
           const currentThresholds = thresholds;
-          if (currentThresholds && wrist) {
-          const gesture = classifyGesture({
-            wristY: wristNormalizedY,
-            wristVelocityX,
-            shoulderY: shoulderNormalizedY,
-            thresholds: currentThresholds,
-            hasPose,
-            hasWrist,
-          });
+          let gesture: "idle" | "jump" | "flap" = "idle";
+          const usingKeyboard = preferKeyboard || cameraStatus === "denied";
 
-            if (gesture === "jump" && playerRef.current.grounded) {
-              playerRef.current.vy = JUMP_IMPULSE;
-              playerRef.current.grounded = false;
-              lastJumpTimeRef.current = time;
-              jumpStreakRef.current += 1;
-              const nextCombo = jumpStreakRef.current >= 3 ? 1.5 : 1;
-              setCombo(nextCombo);
-              emitParticles(PLAYER_X + 20, 80, 12);
+          if (usingKeyboard) {
+            if (keyboardJumpRef.current) {
+              gesture = "jump";
+              keyboardJumpRef.current = false;
+            } else if (keyboardFlapRef.current) {
+              gesture = "flap";
+              keyboardFlapRef.current = false;
             }
+          } else if (wristFiltered) {
+            const result = updateGesture(gestureStateRef.current, {
+              wristY: wristFilteredNormalizedY,
+              wristX: wristFiltered.x,
+              shoulderY: shoulderNormalizedY,
+              thresholds: currentThresholds,
+              hasPose,
+              hasWrist,
+              timestamp: time,
+            });
+            gestureStateRef.current = result.state;
+            gesture = result.gesture;
+          }
 
-            if (gesture === "flap") {
+          if (gesture === "jump" && playerRef.current.grounded) {
+            playerRef.current.vy = JUMP_IMPULSE;
+            playerRef.current.grounded = false;
+            lastJumpTimeRef.current = time;
+            jumpStreakRef.current += 1;
+            const nextCombo = jumpStreakRef.current >= 3 ? 1.5 : 1;
+            setCombo(nextCombo);
+            emitParticles(PLAYER_X + 20, 80, 12);
+            setGestureIndicator("jump");
+          }
+
+          if (gesture === "flap") {
+            if (!prefersReducedMotion) {
               shakeTimerRef.current = 0.25;
-              emitParticles(PLAYER_X + 20, 80, 8);
             }
+            emitParticles(PLAYER_X + 20, 80, 8);
+            setGestureIndicator("flap");
           }
 
           if (time - lastJumpTimeRef.current > 1500) {
@@ -307,7 +428,10 @@ export default function GameStage() {
           }
           previousGroundedRef.current = nextJump.grounded;
 
-          if (shakeTimerRef.current > 0) {
+          if (prefersReducedMotion) {
+            shakeTimerRef.current = 0;
+            shakeX.set(0);
+          } else if (shakeTimerRef.current > 0) {
             shakeTimerRef.current -= effectiveDt;
             const magnitude = 4 * (shakeTimerRef.current / 0.25);
             shakeX.set((Math.random() - 0.5) * magnitude);
@@ -382,7 +506,25 @@ export default function GameStage() {
             particle.y += particle.vy * effectiveDt;
             particle.vy -= 220 * effectiveDt;
           }
-          setParticles([...particlePoolLocal]);
+
+          const particleCanvas = particleCanvasRef.current;
+          if (particleCanvas) {
+            const context = particleCanvas.getContext("2d");
+            if (context) {
+              context.clearRect(0, 0, particleCanvas.width, particleCanvas.height);
+              for (const particle of particlePoolLocal) {
+                if (particle.life <= 0) {
+                  continue;
+                }
+                context.globalAlpha = Math.max(0, Math.min(1, particle.life));
+                context.fillStyle = "#ffffff";
+                context.beginPath();
+                context.arc(particle.x, particleCanvas.height - particle.y, 2, 0, Math.PI * 2);
+                context.fill();
+              }
+              context.globalAlpha = 1;
+            }
+          }
         } catch (error) {
           console.error("[GameError]", error);
           setToast("Something went wrong. Please try again.");
@@ -394,12 +536,16 @@ export default function GameStage() {
         combo,
         emitParticles,
         hasPose,
+        hasWrist,
         highScore,
         isCalibrating,
         isGameOver,
         isPaused,
+        cameraStatus,
+        preferKeyboard,
         playerSquish,
         playerY,
+        prefersReducedMotion,
         score,
         setCombo,
         setHighScore,
@@ -407,35 +553,43 @@ export default function GameStage() {
         spawnObstacle,
         thresholds,
         worldX,
-        wrist,
-        wristNormalizedY,
-        wristVelocityX,
+        wristFiltered,
+        wristFilteredNormalizedY,
+        shoulderNormalizedY,
       ]
     ),
     !isPaused && !isGameOver && !isCalibrating
   );
 
   const handleCalibrationComplete = useCallback(
-    (values: { idleThreshold: number; jumpThreshold: number }) => {
-      saveThresholds(values);
-      setThresholds(values);
+    (result: CalibrationResult) => {
+      saveThresholds(result.thresholds);
+      setThresholds(result.thresholds);
+      setCalibrationStats(result.stats);
       setTimeout(() => {
         setIsCalibrating(false);
       }, 400);
     },
-    [setThresholds]
+    [setCalibrationStats, setThresholds]
   );
 
   const handleSkipCalibration = useCallback(() => {
     const fallback = { idleThreshold: 0.75, jumpThreshold: 0.35 };
     saveThresholds(fallback);
     setThresholds(fallback);
+    setCalibrationStats({
+      lowMean: 0.75,
+      lowStd: 0.08,
+      highMean: 0.35,
+      highStd: 0.08,
+    });
     setIsCalibrating(false);
-  }, [setThresholds]);
+  }, [setCalibrationStats, setThresholds]);
 
   const handleRecalibrate = () => {
     clearThresholds();
     setThresholds(null);
+    setCalibrationStats(null);
     setIsCalibrating(true);
   };
 
@@ -467,6 +621,11 @@ export default function GameStage() {
           <div className="absolute bottom-10 left-0 right-0 h-px bg-gradient-to-r from-transparent via-cyan-400/40 to-transparent" />
         </div>
 
+        <canvas
+          ref={particleCanvasRef}
+          className="pointer-events-none absolute inset-0"
+        />
+
         <Player y={playerY} squish={playerSquish} />
 
         {obstacles
@@ -481,22 +640,35 @@ export default function GameStage() {
             />
           ))}
 
-        {particles
-          .filter((particle) => particle.life > 0)
-          .map((particle) => (
-            <div
-              key={particle.id}
-              className="absolute bottom-12 h-2 w-2 rounded-full bg-white"
-              style={{
-                transform: `translate(${particle.x}px, ${-particle.y}px)`,
-                opacity: Math.max(0, particle.life),
-              }}
-            />
-          ))}
+        <div
+          className={
+            isCalibrating
+              ? "absolute left-1/2 top-1/2 z-20 h-[220px] w-[392px] -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-slate-600/50 bg-glass p-2"
+              : "absolute bottom-6 right-6 z-20 h-[108px] w-[192px] rounded-lg border border-slate-600/50 bg-slate-950/70 p-1"
+          }
+        >
+          <video
+            ref={videoRef}
+            className="h-full w-full rounded-lg object-cover opacity-90"
+            autoPlay
+            playsInline
+            muted
+          />
+          <canvas
+            ref={overlayRef}
+            width={isCalibrating ? 392 : 192}
+            height={isCalibrating ? 220 : 108}
+            className="pointer-events-none absolute inset-0 h-full w-full opacity-30"
+          />
+        </div>
 
         <Hud
           fps={fps}
           keypoints={keypoints}
+          preferKeyboard={preferKeyboard}
+          onToggleControls={() => setPreferKeyboard(!preferKeyboard)}
+          gestureIndicator={gestureIndicator}
+          jumpReady={jumpReady}
           videoRef={videoRef}
           overlayRef={overlayRef}
         />
@@ -522,7 +694,7 @@ export default function GameStage() {
             hasPose={hasPose}
             hasWrist={hasWrist}
             isModelReady={isModelReady}
-            wristNormalizedY={wristNormalizedY}
+            wristNormalizedY={wristFilteredNormalizedY || wristNormalizedY}
             onComplete={handleCalibrationComplete}
             onSkip={handleSkipCalibration}
             onError={(message) => setToast(message)}

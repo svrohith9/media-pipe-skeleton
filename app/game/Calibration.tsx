@@ -1,20 +1,28 @@
 "use client";
 
 import { AnimatePresence, motion } from "framer-motion";
+import Image from "next/image";
 import { useEffect, useRef, useState } from "react";
+import CalibrationRing from "../../components/CalibrationRing";
 import GlassCard from "../../components/GlassCard";
-import { type PoseThresholds } from "../../lib/gesture";
+import type { PoseThresholds } from "../../lib/gesture";
+import type { CalibrationStats } from "../../store/gameStore";
 
 const CAPTURE_FRAMES = 30;
 
-type Phase = "down" | "up" | "done";
+type Phase = "low" | "high" | "done";
+
+export type CalibrationResult = {
+  thresholds: PoseThresholds;
+  stats: CalibrationStats;
+};
 
 export type CalibrationProps = {
   hasPose: boolean;
   hasWrist: boolean;
   isModelReady: boolean;
   wristNormalizedY: number;
-  onComplete: (thresholds: PoseThresholds) => void;
+  onComplete: (result: CalibrationResult) => void;
   onSkip: () => void;
   onError?: (message: string) => void;
 };
@@ -23,6 +31,17 @@ const slideUp = {
   hidden: { opacity: 0, y: 40 },
   visible: { opacity: 1, y: 0, transition: { duration: 0.3, ease: "easeOut" } },
   exit: { opacity: 0, y: 40, transition: { duration: 0.2, ease: "easeIn" } },
+};
+
+const mean = (values: number[]) =>
+  values.reduce((sum, value) => sum + value, 0) / Math.max(1, values.length);
+
+const stdDev = (values: number[]) => {
+  const avg = mean(values);
+  const variance =
+    values.reduce((sum, value) => sum + (value - avg) ** 2, 0) /
+    Math.max(1, values.length);
+  return Math.sqrt(variance);
 };
 
 export default function Calibration({
@@ -34,11 +53,12 @@ export default function Calibration({
   onSkip,
   onError,
 }: CalibrationProps) {
-  const [phase, setPhase] = useState<Phase>("down");
-  const downSamplesRef = useRef<number[]>([]);
-  const upSamplesRef = useRef<number[]>([]);
-  const [progress, setProgress] = useState(0);
-  const phaseRef = useRef<Phase>("down");
+  const [phase, setPhase] = useState<Phase>("low");
+  const [lowProgress, setLowProgress] = useState(0);
+  const [highProgress, setHighProgress] = useState(0);
+  const lowSamplesRef = useRef<number[]>([]);
+  const highSamplesRef = useRef<number[]>([]);
+  const phaseRef = useRef<Phase>("low");
   const lastSampleRef = useRef(0);
 
   useEffect(() => {
@@ -46,7 +66,7 @@ export default function Calibration({
   }, [phase]);
 
   useEffect(() => {
-    if (phase === "done") {
+    if (phase === "done" || !isModelReady) {
       return;
     }
 
@@ -60,66 +80,77 @@ export default function Calibration({
         lastSampleRef.current = time;
 
         if (hasPose && (hasWrist || wristNormalizedY > 0)) {
-          const currentPhase = phaseRef.current;
-          if (currentPhase === "down") {
-            downSamplesRef.current.push(wristNormalizedY);
-            const nextProgress =
-              downSamplesRef.current.length / CAPTURE_FRAMES;
-            setProgress(nextProgress);
-            if (downSamplesRef.current.length >= CAPTURE_FRAMES) {
-              setPhase("up");
+          if (phaseRef.current === "low") {
+            lowSamplesRef.current.push(wristNormalizedY);
+            setLowProgress(lowSamplesRef.current.length / CAPTURE_FRAMES);
+            if (lowSamplesRef.current.length >= CAPTURE_FRAMES) {
+              setPhase("high");
             }
-          } else if (currentPhase === "up") {
-            upSamplesRef.current.push(wristNormalizedY);
-            const nextProgress = upSamplesRef.current.length / CAPTURE_FRAMES;
-            setProgress(nextProgress);
-            if (upSamplesRef.current.length >= CAPTURE_FRAMES) {
-              const idleThreshold =
-                downSamplesRef.current.reduce((sum, value) => sum + value, 0) /
-                Math.max(1, downSamplesRef.current.length);
-              let jumpThreshold =
-                upSamplesRef.current.reduce((sum, value) => sum + value, 0) /
-                Math.max(1, upSamplesRef.current.length);
+          } else if (phaseRef.current === "high") {
+            highSamplesRef.current.push(wristNormalizedY);
+            setHighProgress(highSamplesRef.current.length / CAPTURE_FRAMES);
+            if (highSamplesRef.current.length >= CAPTURE_FRAMES) {
+              const lowMean = mean(lowSamplesRef.current);
+              const highMean = mean(highSamplesRef.current);
+              const lowStd = stdDev(lowSamplesRef.current);
+              const highStd = stdDev(highSamplesRef.current);
+              let idleThreshold = lowMean + 0.3 * lowStd;
+              let jumpThreshold = highMean - 0.3 * highStd;
               if (jumpThreshold >= idleThreshold) {
-                jumpThreshold = Math.max(0, idleThreshold - 0.06);
+                jumpThreshold = Math.max(0.05, idleThreshold - 0.06);
               }
               setPhase("done");
-              setProgress(1);
-              onComplete({ idleThreshold, jumpThreshold });
+              onComplete({
+                thresholds: { idleThreshold, jumpThreshold },
+                stats: {
+                  lowMean,
+                  lowStd,
+                  highMean,
+                  highStd,
+                },
+              });
             }
           }
         }
       }
+
       raf = requestAnimationFrame(sample);
     };
 
     raf = requestAnimationFrame(sample);
+
     const timeout = window.setTimeout(() => {
       if (phaseRef.current === "done" || !isModelReady) {
         return;
       }
 
-      const fallbackIdle =
-        downSamplesRef.current.length > 0
-          ? downSamplesRef.current.reduce((sum, value) => sum + value, 0) /
-            downSamplesRef.current.length
-          : 0.75;
-      const fallbackJump =
-        upSamplesRef.current.length > 0
-          ? upSamplesRef.current.reduce((sum, value) => sum + value, 0) /
-            upSamplesRef.current.length
-          : 0.35;
+      const lowMean = lowSamplesRef.current.length
+        ? mean(lowSamplesRef.current)
+        : 0.75;
+      const highMean = highSamplesRef.current.length
+        ? mean(highSamplesRef.current)
+        : 0.35;
+      const lowStd = lowSamplesRef.current.length
+        ? stdDev(lowSamplesRef.current)
+        : 0.08;
+      const highStd = highSamplesRef.current.length
+        ? stdDev(highSamplesRef.current)
+        : 0.08;
+      const idleThreshold = lowMean + 0.3 * lowStd;
+      const jumpThreshold = Math.max(0.05, highMean - 0.3 * highStd);
       onError?.("Calibration timed out. Using fallback thresholds.");
       setPhase("done");
-      setProgress(1);
-      onComplete({ idleThreshold: fallbackIdle, jumpThreshold: fallbackJump });
+      onComplete({
+        thresholds: { idleThreshold, jumpThreshold },
+        stats: { lowMean, lowStd, highMean, highStd },
+      });
     }, 20000);
 
     return () => {
       cancelAnimationFrame(raf);
       window.clearTimeout(timeout);
     };
-  }, [hasPose, hasWrist, onComplete, onError, phase, wristNormalizedY]);
+  }, [hasPose, hasWrist, isModelReady, onComplete, onError, phase, wristNormalizedY]);
 
   return (
     <AnimatePresence>
@@ -131,37 +162,50 @@ export default function Calibration({
         exit="exit"
         variants={slideUp}
       >
-        <GlassCard className="w-[min(520px,90vw)] text-center">
+        <GlassCard className="relative w-[min(620px,92vw)] overflow-hidden text-center">
+          <Image
+            src="/assets/calibrate.png"
+            alt="Calibration reference"
+            fill
+            priority
+            sizes="(max-width: 768px) 90vw, 520px"
+            className="object-cover opacity-20"
+          />
+          <div className="relative z-10">
           <div className="text-xs uppercase tracking-[0.4em] text-slate-400">
             Calibration
           </div>
           <h2 className="mt-3 text-2xl font-semibold text-cyan-200">
-            {phase === "down" && "Hold your arm down"}
-            {phase === "up" && "Raise to shoulder height"}
-            {phase === "done" && "Calibrated!"}
+            Hold arm LOW -> HIGH
           </h2>
-        <p className="mt-2 text-sm text-slate-400">
-          Stand about 1 meter from the camera and keep your arm steady.
-        </p>
-        {!isModelReady && (
-          <p className="mt-3 text-xs text-slate-500">Loading pose model...</p>
-        )}
-          <div className="mt-6 h-2 w-full overflow-hidden rounded-full bg-slate-800">
-            <div
-              className="h-full bg-gradient-to-r from-cyan-400 to-fuchsia-500 transition-all"
-              style={{ width: `${Math.min(100, progress * 100)}%` }}
+          <p className="mt-2 text-sm text-slate-400">
+            {phase === "done"
+              ? "Calibrated!"
+              : "Keep your wrist steady. We sample 30 frames for each pose."}
+          </p>
+          {!isModelReady && (
+            <p className="mt-3 text-xs text-slate-500">Loading pose model...</p>
+          )}
+          <div className="mt-6 flex flex-wrap items-center justify-center gap-8">
+            <CalibrationRing
+              label="Low"
+              progress={lowProgress}
+              active={phase === "low"}
+            />
+            <CalibrationRing
+              label="High"
+              progress={highProgress}
+              active={phase === "high"}
             />
           </div>
-        <div className="mt-3 text-xs text-slate-500">
-          {Math.round(progress * 100)}% captured
-        </div>
-        <button
-          onClick={onSkip}
-          className="mt-4 text-xs uppercase tracking-[0.3em] text-slate-400 hover:text-cyan-200"
-        >
-          Use defaults
-        </button>
-      </GlassCard>
+          <button
+            onClick={onSkip}
+            className="mt-6 text-xs uppercase tracking-[0.3em] text-slate-400 hover:text-cyan-200"
+          >
+            Use defaults
+          </button>
+          </div>
+        </GlassCard>
       </motion.div>
     </AnimatePresence>
   );

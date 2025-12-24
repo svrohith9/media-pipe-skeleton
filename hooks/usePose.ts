@@ -8,7 +8,9 @@ import {
   normalizeY,
   smoothKeypoints,
 } from "../lib/pose";
-import { useGameStore } from "../lib/store";
+import { KalmanFilter1D } from "../lib/kalmanFilter1D";
+import { useGameStore } from "../store/gameStore";
+import { useMounted } from "./useMounted";
 
 type WorkerPoseMessage = {
   type: "pose";
@@ -33,10 +35,12 @@ type PoseResult = {
   wristScore: number;
   shoulderNormalizedY: number;
   isModelReady: boolean;
+  cameraStatus: "idle" | "ready" | "denied";
   fps: number;
   wrist: PoseKeypoint | null;
+  wristFiltered: { x: number; y: number } | null;
+  wristFilteredNormalizedY: number;
   wristNormalizedY: number;
-  wristVelocityX: number;
   videoRef: React.RefObject<HTMLVideoElement>;
   overlayRef: React.RefObject<HTMLCanvasElement>;
   resolution: { width: number; height: number };
@@ -51,6 +55,9 @@ export function usePose(options: UsePoseOptions = {}): PoseResult {
   const [fps, setFps] = useState(0);
   const [resolution, setResolution] = useState({ width: 640, height: 360 });
   const [isModelReady, setIsModelReady] = useState(false);
+  const [cameraStatus, setCameraStatus] = useState<
+    "idle" | "ready" | "denied"
+  >("idle");
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const overlayRef = useRef<HTMLCanvasElement>(null);
@@ -60,11 +67,13 @@ export function usePose(options: UsePoseOptions = {}): PoseResult {
   const lastSentRef = useRef(0);
   const lastFpsUpdateRef = useRef(0);
   const frameCounterRef = useRef(0);
-  const wristPrevRef = useRef<PoseKeypoint | null>(null);
-  const wristVelocityRef = useRef(0);
-  const wristTimeRef = useRef<number | null>(null);
   const lowResAppliedRef = useRef(false);
   const lastErrorRef = useRef<string | null>(null);
+  const kalmanXRef = useRef<KalmanFilter1D | null>(null);
+  const kalmanYRef = useRef<KalmanFilter1D | null>(null);
+  const lastRenderRef = useRef(0);
+  const inFlightRef = useRef(false);
+  const mountedRef = useMounted();
 
   const reportError = useCallback(
     (message: string) => {
@@ -87,12 +96,18 @@ export function usePose(options: UsePoseOptions = {}): PoseResult {
       return;
     }
 
-    const worker = new Worker(new URL("../workers/pose.worker.ts", import.meta.url), {
+    const workerUrl =
+      process.env.NEXT_PUBLIC_WORKER_URL ??
+      new URL("../workers/pose.worker.ts", import.meta.url).toString();
+    const worker = new Worker(workerUrl, {
       type: "module",
     });
     workerRef.current = worker;
 
     worker.onmessage = (event: MessageEvent<WorkerPoseMessage | WorkerErrorMessage>) => {
+      if (!mountedRef.current) {
+        return;
+      }
       if (event.data.type === "pose") {
         if (!isModelReady) {
           setIsModelReady(true);
@@ -100,7 +115,10 @@ export function usePose(options: UsePoseOptions = {}): PoseResult {
         const smoothed = smoothKeypoints(lastKeypointsRef.current, event.data.keypoints);
         lastKeypointsRef.current = smoothed;
         setKeypoints(smoothed);
-        setLocalKeypoints(smoothed);
+        if (event.data.timestamp - lastRenderRef.current > 66) {
+          lastRenderRef.current = event.data.timestamp;
+          setLocalKeypoints(smoothed);
+        }
         setHasPose(smoothed.some((point) => point.score > 0.05));
       } else if (event.data.type === "error") {
         reportError(event.data.message);
@@ -112,10 +130,12 @@ export function usePose(options: UsePoseOptions = {}): PoseResult {
     };
 
     return () => {
+      worker.onmessage = null;
+      worker.onerror = null;
       worker.terminate();
       workerRef.current = null;
     };
-  }, [enabled, reportError, setKeypoints]);
+  }, [enabled, mountedRef, reportError, setKeypoints]);
 
   useEffect(() => {
     if (!enabled) {
@@ -128,6 +148,12 @@ export function usePose(options: UsePoseOptions = {}): PoseResult {
 
     const init = async () => {
       try {
+        if (!navigator.mediaDevices?.getUserMedia) {
+          setCameraStatus("denied");
+          reportError("Camera API not supported.");
+          return;
+        }
+
         const stream = await navigator.mediaDevices.getUserMedia({
           video: {
             width: resolution.width,
@@ -136,11 +162,20 @@ export function usePose(options: UsePoseOptions = {}): PoseResult {
           audio: false,
         });
 
+        if (!mountedRef.current) {
+          return;
+        }
+
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
           await videoRef.current.play();
+          setCameraStatus("ready");
         }
       } catch (error) {
+        if (!mountedRef.current) {
+          return;
+        }
+        setCameraStatus("denied");
         reportError("Camera permissions denied or unavailable.");
       }
     };
@@ -187,14 +222,39 @@ export function usePose(options: UsePoseOptions = {}): PoseResult {
         return;
       }
 
-      if (time - lastSentRef.current > 33 && video.readyState >= 2) {
-        context.drawImage(video, 0, 0, canvas.width, canvas.height);
-        const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
-        worker.postMessage({
-          type: "frame",
-          imageData,
-        });
+      if (time - lastSentRef.current > 33 && video.readyState >= 2 && !inFlightRef.current) {
+        inFlightRef.current = true;
         lastSentRef.current = time;
+        if (typeof createImageBitmap === "function") {
+          createImageBitmap(video)
+            .then((bitmap) => {
+              worker.postMessage(
+                {
+                  type: "frame",
+                  bitmap,
+                  width: resolution.width,
+                  height: resolution.height,
+                },
+                [bitmap]
+              );
+            })
+            .catch((error) => {
+              reportError(error instanceof Error ? error.message : "Frame capture failed.");
+            })
+            .finally(() => {
+              inFlightRef.current = false;
+            });
+        } else {
+          context.drawImage(video, 0, 0, canvas.width, canvas.height);
+          const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+          worker.postMessage({
+            type: "frame",
+            imageData,
+            width: resolution.width,
+            height: resolution.height,
+          });
+          inFlightRef.current = false;
+        }
       }
 
       frameCounterRef.current += 1;
@@ -230,7 +290,8 @@ export function usePose(options: UsePoseOptions = {}): PoseResult {
     window.__setMockPose = (nextKeypoints: PoseKeypoint[]) => {
       setKeypoints(nextKeypoints);
       setLocalKeypoints(nextKeypoints);
-      setHasPose(nextKeypoints.some((point) => point.score > 0.2));
+      setHasPose(nextKeypoints.some((point) => point.score > 0.05));
+      setIsModelReady(true);
     };
 
     return () => {
@@ -254,19 +315,33 @@ export function usePose(options: UsePoseOptions = {}): PoseResult {
       return;
     }
 
-    const now = performance.now();
-    const prev = wristPrevRef.current;
-    const prevTime = wristTimeRef.current;
-    if (prev && prevTime !== null) {
-      const dx = wrist.x - prev.x;
-      const dt = (now - prevTime) / 1000;
-      if (dt > 0) {
-        wristVelocityRef.current = Math.abs(dx / dt);
-      }
+    if (!kalmanXRef.current) {
+      kalmanXRef.current = new KalmanFilter1D(wrist.x, {
+        processNoise: 2,
+        measurementNoise: 10,
+        estimatedError: 1,
+      });
     }
-    wristPrevRef.current = wrist;
-    wristTimeRef.current = now;
+
+    if (!kalmanYRef.current) {
+      kalmanYRef.current = new KalmanFilter1D(wrist.y, {
+        processNoise: 2,
+        measurementNoise: 10,
+        estimatedError: 1,
+      });
+    }
+
   }, [wrist]);
+
+  const wristFiltered = wrist
+    ? {
+        x: kalmanXRef.current?.update(wrist.x) ?? wrist.x,
+        y: kalmanYRef.current?.update(wrist.y) ?? wrist.y,
+      }
+    : null;
+  const wristFilteredNormalizedY = wristFiltered
+    ? normalizeY(wristFiltered.y, resolution.height)
+    : 0;
 
   return {
     keypoints,
@@ -275,10 +350,12 @@ export function usePose(options: UsePoseOptions = {}): PoseResult {
     wristScore,
     shoulderNormalizedY,
     isModelReady,
+    cameraStatus,
     fps,
     wrist,
+    wristFiltered,
+    wristFilteredNormalizedY,
     wristNormalizedY,
-    wristVelocityX: wristVelocityRef.current,
     videoRef,
     overlayRef,
     resolution,

@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "export": "NEXT_PUBLIC_EXPORT=1 next build && next export",
     "start": "next start",
     "lint": "eslint",
     "test": "vitest run --coverage",
@@ -16,6 +17,7 @@
     "@tensorflow/tfjs-backend-webgl": "^4.22.0",
     "framer-motion": "^11.18.2",
     "next": "^14.2.6",
+    "next-pwa": "^5.6.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "zustand": "^4.5.4",

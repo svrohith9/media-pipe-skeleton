@@ -1,6 +1,7 @@
 "use client";
 
 import { AnimatePresence, motion } from "framer-motion";
+import Image from "next/image";
 import GlassCard from "../../components/GlassCard";
 import NeonButton from "../../components/NeonButton";
 
@@ -35,7 +36,15 @@ export default function PauseModal({
           exit="exit"
           variants={slideUp}
         >
-          <GlassCard className="w-[min(480px,90vw)] text-center">
+          <GlassCard className="relative w-[min(480px,90vw)] overflow-hidden text-center">
+            <Image
+              src="/assets/pause.png"
+              alt="Pause reference"
+              fill
+              sizes="(max-width: 768px) 90vw, 480px"
+              className="object-cover opacity-20"
+            />
+            <div className="relative z-10">
             <div className="text-xs uppercase tracking-[0.4em] text-slate-400">
               Paused
             </div>
@@ -54,6 +63,7 @@ export default function PauseModal({
               >
                 Quit
               </button>
+            </div>
             </div>
           </GlassCard>
         </motion.div>

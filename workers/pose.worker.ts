@@ -1,11 +1,13 @@
-import * as tf from "@tensorflow/tfjs";
-import "@tensorflow/tfjs-backend-webgl";
-import * as poseDetection from "@tensorflow-models/pose-detection";
+import type * as poseDetection from "@tensorflow-models/pose-detection";
 
 const ctx = self as DedicatedWorkerGlobalScope;
 
 let detector: poseDetection.PoseDetector | null = null;
+let poseModule: typeof import("@tensorflow-models/pose-detection") | null = null;
+let tfModule: typeof import("@tensorflow/tfjs") | null = null;
 let isReady = false;
+let offscreen: OffscreenCanvas | null = null;
+let offscreenContext: OffscreenCanvasRenderingContext2D | null = null;
 const KEYPOINT_NAMES = [
   "nose",
   "left_eye",
@@ -31,19 +33,27 @@ async function loadDetector(): Promise<poseDetection.PoseDetector> {
     return detector;
   }
 
-  try {
-    await tf.setBackend("webgl");
-  } catch (error) {
-    await tf.setBackend("cpu");
+  if (!tfModule) {
+    tfModule = await import("@tensorflow/tfjs");
+    await import("@tensorflow/tfjs-backend-webgl");
   }
-  await tf.ready();
+  if (!poseModule) {
+    poseModule = await import("@tensorflow-models/pose-detection");
+  }
+
+  try {
+    await tfModule.setBackend("webgl");
+  } catch (error) {
+    await tfModule.setBackend("cpu");
+  }
+  await tfModule.ready();
 
   const modelUrl = new URL("/models/movenet/model.json", ctx.location.origin).toString();
 
-  detector = await poseDetection.createDetector(
-    poseDetection.SupportedModels.MoveNet,
+  detector = await poseModule.createDetector(
+    poseModule.SupportedModels.MoveNet,
     {
-      modelType: poseDetection.movenet.modelType.SINGLEPOSE_THUNDER,
+      modelType: poseModule.movenet.modelType.SINGLEPOSE_THUNDER,
       modelUrl,
       enableSmoothing: false,
     }
@@ -54,15 +64,43 @@ async function loadDetector(): Promise<poseDetection.PoseDetector> {
 }
 
 ctx.onmessage = async (event: MessageEvent) => {
-  const data = event.data as { type: string; imageData?: ImageData };
+  const data = event.data as {
+    type: string;
+    imageData?: ImageData;
+    bitmap?: ImageBitmap;
+    width?: number;
+    height?: number;
+  };
 
-  if (data.type !== "frame" || !data.imageData) {
+  if (data.type !== "frame") {
     return;
   }
 
   try {
+    let imageData = data.imageData;
+    if (!imageData && data.bitmap && data.width && data.height) {
+      if (typeof OffscreenCanvas === "undefined") {
+        data.bitmap.close();
+        return;
+      }
+      if (!offscreen || offscreen.width !== data.width || offscreen.height !== data.height) {
+        offscreen = new OffscreenCanvas(data.width, data.height);
+        offscreenContext = offscreen.getContext("2d", { willReadFrequently: true });
+      }
+      if (!offscreenContext) {
+        return;
+      }
+      offscreenContext.drawImage(data.bitmap, 0, 0, data.width, data.height);
+      data.bitmap.close();
+      imageData = offscreenContext.getImageData(0, 0, data.width, data.height);
+    }
+
+    if (!imageData) {
+      return;
+    }
+
     const activeDetector = await loadDetector();
-    const poses = await activeDetector.estimatePoses(data.imageData, {
+    const poses = await activeDetector.estimatePoses(imageData, {
       flipHorizontal: true,
     });
     const keypoints = poses[0]?.keypoints ?? [];

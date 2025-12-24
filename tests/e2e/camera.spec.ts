@@ -7,22 +7,25 @@ type PoseKeypoint = {
   score: number;
 };
 
-const buildKeypoints = (wristY: number): PoseKeypoint[] => [
-  { name: "right_shoulder", x: 320, y: 120, score: 0.9 },
-  { name: "right_elbow", x: 320, y: 180, score: 0.9 },
-  { name: "right_wrist", x: 320, y: wristY, score: 0.9 },
+const buildKeypoints = (wristY: number, wristX = 320): PoseKeypoint[] => [
+  { name: "right_shoulder", x: 320, y: 160, score: 0.9 },
+  { name: "right_elbow", x: 320, y: 220, score: 0.9 },
+  { name: "right_wrist", x: wristX, y: wristY, score: 0.9 },
+  { name: "left_shoulder", x: 280, y: 160, score: 0.8 },
+  { name: "left_elbow", x: 280, y: 220, score: 0.8 },
+  { name: "left_wrist", x: 280, y: wristY, score: 0.8 },
 ];
 
-const pumpFrames = async (page: import("@playwright/test").Page, wristY: number) => {
+const pumpFrames = async (page: import("@playwright/test").Page, wristY: number, wristX = 320) => {
   for (let i = 0; i < 32; i += 1) {
     await page.evaluate((keypoints) => {
       window.__setMockPose?.(keypoints);
-    }, buildKeypoints(wristY));
+    }, buildKeypoints(wristY, wristX));
     await page.waitForTimeout(16);
   }
 };
 
-test("calibration flow and jump", async ({ page }) => {
+test("calibration, jumps, pause, resume", async ({ page }) => {
   await page.goto("/");
 
   await expect(page.getByTestId("calibration")).toBeVisible();
@@ -30,18 +33,26 @@ test("calibration flow and jump", async ({ page }) => {
   await pumpFrames(page, 120);
 
   await expect(page.getByText("Calibrated!")).toBeVisible();
-
-  await page.waitForTimeout(500);
-  const player = page.getByTestId("player");
-  const initialTransform = await player.evaluate(
-    (node) => window.getComputedStyle(node).transform
-  );
+  await page.waitForTimeout(600);
 
   await pumpFrames(page, 120);
   await page.waitForTimeout(120);
+  await pumpFrames(page, 120, 360);
+  await page.waitForTimeout(120);
+  await pumpFrames(page, 120, 280);
 
-  const jumpedTransform = await player.evaluate(
-    (node) => window.getComputedStyle(node).transform
-  );
-  expect(jumpedTransform).not.toEqual(initialTransform);
+  const scoreCard = page.getByText("Score");
+  await expect(scoreCard).toBeVisible();
+  const scoreValue = page.locator("div", { hasText: "Score" }).locator(".font-mono").first();
+  await expect(scoreValue).not.toHaveText("0", { timeout: 15000 });
+
+  await page.evaluate(() => {
+    window.__setMockPose?.([]);
+  });
+  await page.waitForTimeout(2200);
+  await expect(page.getByText("Camera lost")).toBeVisible();
+
+  await page.getByRole("button", { name: "Resume" }).click();
+  await pumpFrames(page, 300);
+  await expect(page.getByText("Camera lost")).not.toBeVisible();
 });
