@@ -19,6 +19,7 @@ type WorkerPoseMessage = {
   type: "POSES";
   payload: PoseKeypoint[];
   timestamp: number;
+  maxScore?: number;
 };
 
 type WorkerErrorMessage = {
@@ -73,6 +74,7 @@ export function usePose(options: UsePoseOptions = {}): PoseResult {
   const lastWorkerMessageRef = useRef(0);
   const lastWorkerRestartRef = useRef(0);
   const workerStartRef = useRef(0);
+  const noPoseFramesRef = useRef(0);
   const frameCounterRef = useRef(0);
   const lastFpsUpdateRef = useRef(0);
   const inFlightRef = useRef(false);
@@ -163,6 +165,23 @@ export function usePose(options: UsePoseOptions = {}): PoseResult {
           if (!isModelReady) {
             setIsModelReady(true);
           }
+          const score = event.data.maxScore ?? 0;
+          if (score < 0.2) {
+            noPoseFramesRef.current += 1;
+            setHasPose(false);
+            setKeypoints([], event.data.timestamp);
+            setLocalKeypoints([]);
+            if (noPoseFramesRef.current > 120) {
+              console.warn("[GameError] No pose detected. Restarting worker.");
+              workerRef.current?.terminate();
+              workerRef.current = null;
+              setIsModelReady(false);
+              noPoseFramesRef.current = 0;
+              createWorker();
+            }
+            return;
+          }
+          noPoseFramesRef.current = 0;
           const smoothed = smoothKeypoints(
             lastKeypointsRef.current,
             event.data.payload

@@ -84,6 +84,7 @@ ctx.onmessage = async (event: MessageEvent) => {
     }
 
     if (typeof OffscreenCanvas === "undefined") {
+      ctx.postMessage({ type: "ERROR", message: "OFFSCREEN_CANVAS_UNSUPPORTED" });
       data.bitmap.close();
       return;
     }
@@ -123,10 +124,12 @@ ctx.onmessage = async (event: MessageEvent) => {
         score: match?.score ?? 0,
       };
     });
+    const maxScore = ordered.reduce((max, point) => Math.max(max, point.score), 0);
 
     ctx.postMessage({
       type: "POSES",
       payload: ordered,
+      maxScore,
       timestamp: data.timestamp ?? performance.now(),
       ready: isReady,
     });
