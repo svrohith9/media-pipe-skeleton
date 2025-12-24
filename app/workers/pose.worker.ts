@@ -102,7 +102,8 @@ ctx.onmessage = async (event: MessageEvent) => {
     data.bitmap.close();
 
     const activeDetector = await loadDetector();
-    const poses = await activeDetector.estimatePoses(offscreen, {
+    const input = offscreen as unknown as HTMLCanvasElement;
+    const poses = await activeDetector.estimatePoses(input, {
       flipHorizontal: true,
     });
     const keypoints = poses[0]?.keypoints ?? [];
