@@ -61,7 +61,6 @@ export default function GameStage() {
   const [isCalibrating, setIsCalibrating] = useState(true);
   const [hitFlash, setHitFlash] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
-  const [debug, setDebug] = useState(false);
 
   const thresholds = useGameStore((state) => state.thresholds);
   const setThresholds = useGameStore((state) => state.setThresholds);
@@ -153,16 +152,6 @@ export default function GameStage() {
     const timeout = window.setTimeout(() => setToast(null), 3200);
     return () => window.clearTimeout(timeout);
   }, [toast]);
-
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key.toLowerCase() === "d") {
-        setDebug((value) => !value);
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
 
   useEffect(() => {
     const resize = () => {
@@ -532,6 +521,7 @@ export default function GameStage() {
           <Calibration
             hasPose={hasPose}
             hasWrist={hasWrist}
+            isModelReady={isModelReady}
             wristNormalizedY={wristNormalizedY}
             onComplete={handleCalibrationComplete}
             onSkip={handleSkipCalibration}
@@ -561,22 +551,6 @@ export default function GameStage() {
           </motion.div>
         )}
 
-        {debug && (
-          <div className="absolute bottom-6 left-6 z-40 rounded-xl bg-glass px-4 py-3 text-xs text-slate-200">
-            <div className="font-mono text-cyan-300">Debug</div>
-            <div>modelReady: {String(isModelReady)}</div>
-            <div>hasPose: {String(hasPose)}</div>
-            <div>hasWrist: {String(hasWrist)}</div>
-            <div>wristScore: {wrist?.score?.toFixed(2) ?? "0.00"}</div>
-            <div>wristY: {wristNormalizedY.toFixed(2)}</div>
-            <div>shoulderY: {shoulderNormalizedY.toFixed(2)}</div>
-            <div>velocityX: {Math.round(wristVelocityX)}</div>
-            <div>
-              thresholds: {thresholds?.idleThreshold?.toFixed(2) ?? "--"} /{" "}
-              {thresholds?.jumpThreshold?.toFixed(2) ?? "--"}
-            </div>
-          </div>
-        )}
       </motion.div>
     </div>
   );

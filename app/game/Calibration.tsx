@@ -12,6 +12,7 @@ type Phase = "down" | "up" | "done";
 export type CalibrationProps = {
   hasPose: boolean;
   hasWrist: boolean;
+  isModelReady: boolean;
   wristNormalizedY: number;
   onComplete: (thresholds: PoseThresholds) => void;
   onSkip: () => void;
@@ -27,6 +28,7 @@ const slideUp = {
 export default function Calibration({
   hasPose,
   hasWrist,
+  isModelReady,
   wristNormalizedY,
   onComplete,
   onSkip,
@@ -50,7 +52,7 @@ export default function Calibration({
 
     let raf = 0;
     const sample = (time: number) => {
-      if (phaseRef.current === "done") {
+      if (phaseRef.current === "done" || !isModelReady) {
         return;
       }
 
@@ -93,7 +95,7 @@ export default function Calibration({
 
     raf = requestAnimationFrame(sample);
     const timeout = window.setTimeout(() => {
-      if (phaseRef.current === "done") {
+      if (phaseRef.current === "done" || !isModelReady) {
         return;
       }
 
@@ -138,9 +140,12 @@ export default function Calibration({
             {phase === "up" && "Raise to shoulder height"}
             {phase === "done" && "Calibrated!"}
           </h2>
-          <p className="mt-2 text-sm text-slate-400">
-            Stand about 1 meter from the camera and keep your arm steady.
-          </p>
+        <p className="mt-2 text-sm text-slate-400">
+          Stand about 1 meter from the camera and keep your arm steady.
+        </p>
+        {!isModelReady && (
+          <p className="mt-3 text-xs text-slate-500">Loading pose model...</p>
+        )}
           <div className="mt-6 h-2 w-full overflow-hidden rounded-full bg-slate-800">
             <div
               className="h-full bg-gradient-to-r from-cyan-400 to-fuchsia-500 transition-all"
