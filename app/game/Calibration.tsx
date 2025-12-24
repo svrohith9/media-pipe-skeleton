@@ -176,7 +176,7 @@ export default function Calibration({
             Calibration
           </div>
           <h2 className="mt-3 text-2xl font-semibold text-cyan-200">
-            Hold arm LOW -> HIGH
+            Hold arm LOW -&gt; HIGH
           </h2>
           <p className="mt-2 text-sm text-slate-400">
             {phase === "done"

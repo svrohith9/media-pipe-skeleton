@@ -96,12 +96,12 @@ export function usePose(options: UsePoseOptions = {}): PoseResult {
       return;
     }
 
-    const workerUrl =
-      process.env.NEXT_PUBLIC_WORKER_URL ??
-      new URL("../workers/pose.worker.ts", import.meta.url).toString();
-    const worker = new Worker(workerUrl, {
-      type: "module",
-    });
+    const worker = new Worker(
+      new URL("../app/workers/pose.worker.ts", import.meta.url),
+      {
+        type: "module",
+      }
+    );
     workerRef.current = worker;
 
     worker.onmessage = (event: MessageEvent<WorkerPoseMessage | WorkerErrorMessage>) => {

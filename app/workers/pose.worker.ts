@@ -1,3 +1,5 @@
+/// <reference lib="webworker" />
+
 import type * as poseDetection from "@tensorflow-models/pose-detection";
 
 const ctx = self as DedicatedWorkerGlobalScope;
