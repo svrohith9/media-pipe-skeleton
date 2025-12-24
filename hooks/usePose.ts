@@ -87,6 +87,7 @@ export function usePose(options: UsePoseOptions = {}): PoseResult {
   const lastErrorRef = useRef<string | null>(null);
   const kalmanXRef = useRef<KalmanFilter1D | null>(null);
   const kalmanYRef = useRef<KalmanFilter1D | null>(null);
+  const preflightStartedRef = useRef(false);
 
   const reportError = useCallback(
     (message: string) => {
@@ -104,6 +105,10 @@ export function usePose(options: UsePoseOptions = {}): PoseResult {
     if (!enabled || isE2E || poseError) {
       return;
     }
+    if (preflightStartedRef.current) {
+      return;
+    }
+    preflightStartedRef.current = true;
 
     const run = async () => {
       try {
@@ -149,8 +154,13 @@ export function usePose(options: UsePoseOptions = {}): PoseResult {
     }
 
     videoRef.current.srcObject = stream;
-    void videoRef.current.play();
-  }, [stream]);
+    void videoRef.current.play().catch((error) => {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        return;
+      }
+      reportError(error instanceof Error ? error.message : "Video play failed.");
+    });
+  }, [reportError, stream]);
 
   useEffect(() => {
     if (!enabled) {

@@ -28,6 +28,9 @@ export function useCamera() {
     }
 
     try {
+      if (stream) {
+        return stream;
+      }
       setStatus("loading");
       const nextStream = await navigator.mediaDevices.getUserMedia({
         video: {
@@ -63,7 +66,7 @@ export function useCamera() {
       setStatus("denied");
       return null;
     }
-  }, [mountedRef]);
+  }, [mountedRef, stream]);
 
   useEffect(() => {
     return () => {
