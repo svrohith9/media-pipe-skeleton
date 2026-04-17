@@ -1,3 +1,13 @@
+# MediaPipe Skeleton
+
+A real-time, browser-based pose-tracking reference app built with Next.js. Uses MediaPipe + MoveNet Thunder served locally from `public/models/movenet` — no CORS, no external inference calls, everything runs client-side.
+
+## What it does
+
+- Runs MoveNet Thunder pose detection in the browser on your webcam feed
+- Falls back to keyboard input (Space / Up / Down) if the camera is unavailable
+- Ships as a PWA or a static export served by nginx in Docker
+- Covered by vitest unit tests and Playwright e2e tests
 
 ## Quick start
 
